@@ -11,4 +11,6 @@ set_global_assignment -name QIP_FILE rtl/cpu/T80/T80.qip
 set_global_assignment -name VERILOG_FILE rtl/cpu/cpu_z80.v
 set_global_assignment -name VERILOG_FILE rtl/cpu/cpu_68k.v
 set_global_assignment -name SYSTEMVERILOG_FILE neogeo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ra_ram_mirror_neogeo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ddram_arb_neogeo.sv
 set_global_assignment -name SDC_FILE NeoGeo.sdc

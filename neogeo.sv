@@ -1325,6 +1325,11 @@ assign WRAMU_WREN = SYSTEM_CDx ? (~nSDMWR & SDA[0])  : ~nWWU;
 assign WRAML_WREN = SYSTEM_CDx ? (~nSDMWR & ~SDA[0]) : ~nWWL;
 
 // 68k/Z80 work RAM
+// --- RetroAchievements RAM Mirror ---
+wire [14:0] ra_bram_addr;
+wire  [7:0] ra_wraml_dout;
+wire  [7:0] ra_wramu_dout;
+
 dpram #(15) WRAML(
 	.clock_a(CLK_48M),
 	.address_a(WRAM_ADDR),
@@ -1333,9 +1338,10 @@ dpram #(15) WRAML(
 	.q_a(WRAML_OUT),
 
 	.clock_b(CLK_48M),
-	.address_b(TRASH_ADDR),
+	.address_b(~nRESET ? TRASH_ADDR : ra_bram_addr),
 	.data_b(TRASH_ADDR[7:0]),
-	.wren_b(~nRESET)
+	.wren_b(~nRESET),
+	.q_b(ra_wraml_dout)
 );
 
 dpram #(15) WRAMU(
@@ -1346,9 +1352,96 @@ dpram #(15) WRAMU(
 	.q_a(WRAMU_OUT),
 
 	.clock_b(CLK_48M),
-	.address_b(TRASH_ADDR),
+	.address_b(~nRESET ? TRASH_ADDR : ra_bram_addr),
 	.data_b(TRASH_ADDR[7:0]),
-	.wren_b(~nRESET)
+	.wren_b(~nRESET),
+	.q_b(ra_wramu_dout)
+);
+
+// --- CD mode shadow BRAM for 68K Work RAM (RetroAchievements) ---
+// In CD mode, WRAML/WRAMU are repurposed for Z80 RAM. The 68K Work RAM
+// lives in SDRAM, so we need shadow BRAMs to capture writes for RA.
+wire [14:0] cd_wram_shadow_addr;
+wire  [7:0] cd_wram_shadow_l_data, cd_wram_shadow_u_data;
+wire        cd_wram_shadow_l_wren, cd_wram_shadow_u_wren;
+wire  [7:0] cd_ra_wraml_dout, cd_ra_wramu_dout;
+
+// CPU writes to WRAM zone ($100000-$1FFFFF) — nWWL/nWWU already decode this
+wire cd_cpu_wram_wr_l = SYSTEM_CDx & ~DMA_RUNNING & ~nWWL;
+wire cd_cpu_wram_wr_u = SYSTEM_CDx & ~DMA_RUNNING & ~nWWU;
+
+// DMA writes to WRAM zone ($100000-$10FFFF)
+wire cd_dma_wram_wr = SYSTEM_CDx & DMA_RUNNING & (DMA_ADDR_OUT[23:21] == 3'd0) & DMA_ADDR_OUT[20] & DMA_WR_OUT;
+
+assign cd_wram_shadow_addr   = DMA_RUNNING ? DMA_ADDR_OUT[15:1] : M68K_ADDR[15:1];
+assign cd_wram_shadow_l_data = DMA_RUNNING ? DMA_DATA_OUT[7:0]  : M68K_DATA[7:0];
+assign cd_wram_shadow_u_data = DMA_RUNNING ? DMA_DATA_OUT[15:8] : M68K_DATA[15:8];
+assign cd_wram_shadow_l_wren = cd_dma_wram_wr | cd_cpu_wram_wr_l;
+assign cd_wram_shadow_u_wren = cd_dma_wram_wr | cd_cpu_wram_wr_u;
+
+dpram #(15) CD_WRAML_SHADOW(
+	.clock_a(CLK_48M),
+	.address_a(cd_wram_shadow_addr),
+	.data_a(cd_wram_shadow_l_data),
+	.wren_a(cd_wram_shadow_l_wren),
+	.q_a(),
+
+	.clock_b(CLK_48M),
+	.address_b(~nRESET ? TRASH_ADDR : ra_bram_addr),
+	.data_b(TRASH_ADDR[7:0]),
+	.wren_b(~nRESET),
+	.q_b(cd_ra_wraml_dout)
+);
+
+dpram #(15) CD_WRAMU_SHADOW(
+	.clock_a(CLK_48M),
+	.address_a(cd_wram_shadow_addr),
+	.data_a(cd_wram_shadow_u_data),
+	.wren_a(cd_wram_shadow_u_wren),
+	.q_a(),
+
+	.clock_b(CLK_48M),
+	.address_b(~nRESET ? TRASH_ADDR : ra_bram_addr),
+	.data_b(TRASH_ADDR[7:0]),
+	.wren_b(~nRESET),
+	.q_b(cd_ra_wramu_dout)
+);
+
+// RA mirror module
+wire [28:0] ra_ddram_wr_addr;
+wire [63:0] ra_ddram_wr_din;
+wire  [7:0] ra_ddram_wr_be;
+wire        ra_ddram_wr_req;
+wire        ra_ddram_wr_ack;
+wire [28:0] ra_ddram_rd_addr;
+wire        ra_ddram_rd_req;
+wire        ra_ddram_rd_ack;
+wire [63:0] ra_ddram_rd_dout;
+wire        ra_active;
+wire [31:0] ra_dbg_frame;
+
+ra_ram_mirror_neogeo ra_mirror
+(
+	.clk(CLK_48M),
+	.reset(~nRESET),
+	.vblank(~nBNKB),
+
+	.bram_addr(ra_bram_addr),
+	.wraml_dout(SYSTEM_CDx ? cd_ra_wraml_dout : ra_wraml_dout),
+	.wramu_dout(SYSTEM_CDx ? cd_ra_wramu_dout : ra_wramu_dout),
+
+	.ddram_wr_addr(ra_ddram_wr_addr),
+	.ddram_wr_din(ra_ddram_wr_din),
+	.ddram_wr_be(ra_ddram_wr_be),
+	.ddram_wr_req(ra_ddram_wr_req),
+	.ddram_wr_ack(ra_ddram_wr_ack),
+	.ddram_rd_addr(ra_ddram_rd_addr),
+	.ddram_rd_req(ra_ddram_rd_req),
+	.ddram_rd_ack(ra_ddram_rd_ack),
+	.ddram_rd_dout(ra_ddram_rd_dout),
+
+	.active(ra_active),
+	.dbg_frame_counter(ra_dbg_frame)
 );
 
 wire [23:0] P2ROM_ADDR_PVC, P2ROM_ADDR_SMA;
@@ -1908,15 +2001,35 @@ reg [27:0] ddr_waddr;
 reg [15:0] ddr_wr_din;
 reg ddr_we_byte;
 
-ddram DDRAM(
-	.*,
-	
+// DDRAM signals — intermediate wires between ddram module and arbiter
+wire        ddram_int_busy;
+wire  [7:0] ddram_int_burstcnt;
+wire [28:0] ddram_int_addr;
+wire [63:0] ddram_int_dout;
+wire        ddram_int_dout_ready;
+wire        ddram_int_rd;
+wire [63:0] ddram_int_din;
+wire  [7:0] ddram_int_be;
+wire        ddram_int_we;
+
+ddram DDRAM_inst(
+	.DDRAM_CLK(DDRAM_CLK),
+	.DDRAM_BUSY(ddram_int_busy),
+	.DDRAM_BURSTCNT(ddram_int_burstcnt),
+	.DDRAM_ADDR(ddram_int_addr),
+	.DDRAM_DOUT(ddram_int_dout),
+	.DDRAM_DOUT_READY(ddram_int_dout_ready),
+	.DDRAM_RD(ddram_int_rd),
+	.DDRAM_DIN(ddram_int_din),
+	.DDRAM_BE(ddram_int_be),
+	.DDRAM_WE(ddram_int_we),
+
 	.wraddr(ddr_waddr),
 	.din(ddr_wr_din),
 	.we_req(adpcm_wr),
 	.we_ack(adpcm_wrack),
 	.we_byte(ddr_we_byte),
-	
+
 	.rdaddr(ADPCMA_ADDR_LATCH),
 	.dout(ADPCMA_DOUT),
 	.rd_req(ADPCMA_READ_REQ),
@@ -1937,6 +2050,44 @@ ddram DDRAM(
 	.cpwr(ddr_cpwr),
 	.cpreq(ddr_cpreq),
 	.cpbusy(ddr_cpbusy)
+);
+
+ddram_arb_neogeo ddram_arb
+(
+	.clk(DDRAM_CLK),
+
+	// Physical DDRAM
+	.PHY_BUSY(DDRAM_BUSY),
+	.PHY_BURSTCNT(DDRAM_BURSTCNT),
+	.PHY_ADDR(DDRAM_ADDR),
+	.PHY_DOUT(DDRAM_DOUT),
+	.PHY_DOUT_READY(DDRAM_DOUT_READY),
+	.PHY_RD(DDRAM_RD),
+	.PHY_DIN(DDRAM_DIN),
+	.PHY_BE(DDRAM_BE),
+	.PHY_WE(DDRAM_WE),
+
+	// Primary master (existing ddram module)
+	.PRI_BUSY(ddram_int_busy),
+	.PRI_BURSTCNT(ddram_int_burstcnt),
+	.PRI_ADDR(ddram_int_addr),
+	.PRI_DOUT(ddram_int_dout),
+	.PRI_DOUT_READY(ddram_int_dout_ready),
+	.PRI_RD(ddram_int_rd),
+	.PRI_DIN(ddram_int_din),
+	.PRI_BE(ddram_int_be),
+	.PRI_WE(ddram_int_we),
+
+	// RA mirror (secondary, toggle protocol)
+	.ra_wr_addr(ra_ddram_wr_addr),
+	.ra_wr_din(ra_ddram_wr_din),
+	.ra_wr_be(ra_ddram_wr_be),
+	.ra_wr_req(ra_ddram_wr_req),
+	.ra_wr_ack(ra_ddram_wr_ack),
+	.ra_rd_addr(ra_ddram_rd_addr),
+	.ra_rd_req(ra_ddram_rd_req),
+	.ra_rd_ack(ra_ddram_rd_ack),
+	.ra_rd_dout(ra_ddram_rd_dout)
 );
 
 wire [26:0] ddr_cpaddr = cur_off;
